@@ -60,6 +60,12 @@
       margin-bottom: 5px; }
       .wrapper .app-content-print .control-print .control-item .btn {
         width: 180px; }
+    .wrapper .app-content-print .print-progressbar {
+      margin: 20px 0; }
+    .wrapper .app-content-print .printer-positions {
+      margin: 20px 0 0 0; }
+      .wrapper .app-content-print .printer-positions .pos {
+        margin-right: 20px; }
     .wrapper .app-content-print .control-printer .dropdown {
       display: inline-block; }
       .wrapper .app-content-print .control-printer .dropdown a[ng-click] {

@@ -1,202 +1,69 @@
 from __future__ import unicode_literals, print_function
 
 import logging
+import math
 import os
 import tempfile
 import threading
 import time
-import requests
 import webbrowser
 
-from flask import Flask, render_template, jsonify, url_for, request
+import requests
+from flask import Flask, render_template, jsonify, url_for, request, abort
 from flask_babel import Babel
-from flask_socketio import SocketIO, emit
-from humanize import naturalsize
+from tornado import websocket
+from tornado.ioloop import IOLoop
+from tornado.web import Application, FallbackHandler
+from tornado.wsgi import WSGIContainer
 
 os.sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 from pyrint.helper import get_serial_port_list
-from pyrint.printcore import PrintCore
-from pyrint.gcoder import LightGCode
+from pyrint.printer import set_emitter, printer
 
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
-socket_io = SocketIO(app)
 
 app.config['DEVELOPMENT'] = False
 app.config['DEBUG'] = False
 
+server_host = '127.0.0.1'
+server_port = 5007
 
-class GCodeRaw:
-    def __init__(self):
-        self._path = None
-        self._size = None
-        self._size_hr = None
-        self._name = None
-
-    @property
-    def path(self):
-        return self._path
-
-    @property
-    def size(self):
-        return self._size
-
-    @property
-    def size_hr(self):
-        return self._size_hr
-
-    @property
-    def name(self):
-        return self._name
-
-    def update(self, file_path):
-        self._path = file_path
-        self._name = os.path.basename(file_path)
-        self._size = os.path.getsize(file_path)
-        self._size_hr = naturalsize(self._size)
+clients = []
 
 
-class PrintCoreWrapper(PrintCore):
-    def __init__(self, port=None, baud=None, dtr=None, p_handler=[]):
-        super(PrintCoreWrapper, self).__init__(port, baud, dtr, p_handler)
+class SocketHandler(websocket.WebSocketHandler):
+    def check_origin(self, origin):
+        return True
 
-        self._temperature = 0
-        self.gcode_raw = GCodeRaw()
-        self.gcode = LightGCode()
+    def open(self):
+        if self not in clients:
+            clients.append(self)
 
-    @property
-    def temperature(self):
-        return self._temperature
-
-    def update_temperature(self, raw_temp):
-        t = raw_temp.replace('ok', '').replace('T:', '').strip()
-        self._temperature = t
+    def on_close(self):
+        if self in clients:
+            clients.remove(self)
 
 
-printer = None
+def emit_clients(msg, args={}):
+    for c in clients:
+        c.write_message({'event': msg, 'args': args})
 
 
-def printer_online_cb():
-    socket_io.emit('online', {'port': printer.port, 'baud': printer.baud})
-    printer.send_now("M105")
-
-
-def printer_disconnect_cb():
-    socket_io.emit('disconnected')
-    create_printer()
-
-
-def printer_error_cb(error):
-    socket_io.emit('error', {'msg': error})
-    printer.disconnect()
-    create_printer()
-
-
-def printer_temp_cb(temp):
-    printer.update_temperature(temp)
-    socket_io.emit('temperature', {'temp': printer.temperature})
-
-
-def printer_receive_cb(line):
-    if line.startswith('T:'):
-        printer.update_temperature(line)
-        socket_io.emit('temperature', {'temp': printer.temperature})
-
-
-def printer_start_cb(resuming):
-    socket_io.emit('started')
-
-
-def printer_end_cb():
-    socket_io.emit('ended')
-
-
-def create_printer():
-    global printer
-
-    # remove last uploaded file if exists
-    if printer and printer.gcode_raw.path and os.path.isfile(printer.gcode_raw.path):
-        os.remove(printer.gcode_raw.path)
-
-    printer = PrintCoreWrapper()
-    printer.onlinecb = printer_online_cb
-    printer.disconnectcb = printer_disconnect_cb
-    printer.errorcb = printer_error_cb
-    printer.tempcb = printer_temp_cb
-    printer.recvcb = printer_receive_cb
-    printer.startcb = printer_start_cb
-    printer.endcb = printer_end_cb
-
-
-create_printer()
+set_emitter(emit_clients)
 
 
 def __flask_setup():
     Babel(app)
 
 
-@socket_io.on('connect_printer')
-def connect_printer(data, *args, **kwargs):
-    assert 'port' in data and 'baud' in data
-    port = data['port'].strip()
-    baud = data['baud']
-
-    global printer
-
-    # disconnect if printer already connected
-    if printer.online:
-        printer.disconnect()
-
-    printer.connect(port, baud=baud)
-
-
-@socket_io.on('disconnect_printer')
-def disconnect_printer(data, *args, **kwargs):
-    global printer
-    if printer.printing:
-        printer.cancelprint()
-    printer.disconnect()
-
-
-@socket_io.on('start_printing')
-def start_printing(data, *args, **kwargs):
-    global printer
-    if printer.paused:
-        printer.resume()
-    else:
-        printer.startprint(printer.gcode)
-
-
-@socket_io.on('pause_printing')
-def start_printing(data, *args, **kwargs):
-    global printer
-    if printer.printing:
-        printer.pause()
-        emit('paused')
-
-
-@socket_io.on('cancel_printing')
-def start_printing(data, *args, **kwargs):
-    global printer
-    printer.cancelprint()
-    emit('cancelled')
-
-
-@socket_io.on('send_gcode')
-def send_gcode(data, *args, **kwargs):
-    if 'code' not in data:
-        return
-
-    global printer
-
-    gcode = data['code'].strip()
-
-    printer.send_now(gcode)
-
-
 def __route_setup():
+    """
+    Flask routing setup
+    """
+
     @app.route('/')
     def index():
         return render_template('index.html')
@@ -219,8 +86,6 @@ def __route_setup():
             f.write(file_contents)
             f.close()
 
-        global printer
-
         printer.gcode_raw.update(save_path)
         printer.gcode.prepare(open(save_path, 'rU'))
 
@@ -234,8 +99,6 @@ def __route_setup():
 
     @app.route('/state.json')
     def state():
-        global printer
-
         ret_val = {
             'online': printer.online,
             'printing': printer.printing,
@@ -243,17 +106,82 @@ def __route_setup():
             'port': printer.port,
             'baud': printer.baud,
             'temperature': printer.temperature,
-            'gcode': None
+            'gcode': None,
+            'pos': {
+                'x': math.ceil(printer.analyzer.abs_z),
+                'y': math.ceil(printer.analyzer.abs_y),
+                'z': math.ceil(printer.analyzer.abs_z),
+            }
         }
 
         if len(printer.gcode.lines):
             ret_val['gcode'] = {
                 'file_name': printer.gcode_raw.name,
                 'file_size': printer.gcode_raw.size_hr,
-                'lines': len(printer.gcode.lines)
+                'lines': len(printer.gcode.lines),
+                'lines_sent': len(printer.sentlines),
             }
 
         return jsonify(ret_val)
+
+    @app.route('/connect', methods=('POST',))
+    def connect_printer():
+        data = request.json
+        assert 'port' in data and 'baud' in data
+        port = data['port'].strip()
+        baud = data['baud']
+
+        # disconnect if printer already connected
+        if printer is not None and printer.online:
+            printer.disconnect()
+
+        printer.connect(port, baud=baud)
+
+        return 'OK'
+
+    @app.route('/start', methods=('POST',))
+    def start_printing():
+        if printer.paused:
+            printer.resume()
+        else:
+            printer.startprint(printer.gcode)
+
+        return 'OK'
+
+    @app.route('/pause', methods=('POST',))
+    def pause_printing():
+        if printer.printing:
+            printer.pause()
+        emit_clients('paused')
+
+        return 'OK'
+
+    @app.route('/cancel', methods=('POST',))
+    def cancel_printing():
+        if printer is not None:
+            printer.cancelprint()
+        emit_clients('cancelled')
+
+        return 'OK'
+
+    @app.route('/disconnect', methods=('POST',))
+    def disconnect_printer():
+        if printer is not None:
+            printer.disconnect()
+
+        return 'OK'
+
+    @app.route('/run_gcode', methods=('POST',))
+    def run_gcode():
+        data = request.json
+        if 'code' not in data:
+            abort(400)
+
+        if printer is not None:
+            gcode = data['code'].strip()
+            printer.send_now(gcode)
+
+        return 'OK'
 
 
 def __template_setup():
@@ -271,10 +199,6 @@ def __template_setup():
         return path
 
     app.jinja_env.globals['s_url_for'] = s_url_for
-
-
-server_host = '127.0.0.1'
-server_port = 5007
 
 
 def startup_message():
@@ -297,10 +221,15 @@ def startup_message():
 
 
 def __run_server():
-    host = '127.0.0.1'
-    port = 5007
-    startup_message()
-    socket_io.run(app, host=host, port=port)
+    cont = WSGIContainer(app)
+
+    application = Application([
+        (r'/ws', SocketHandler),
+        (r".*", FallbackHandler, dict(fallback=cont)),
+    ])
+
+    application.listen(server_port, address=server_host)
+    IOLoop.instance().start()
 
 
 if __name__ == '__main__':

@@ -1,16 +1,5 @@
 var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
-/*
-.config(function($routeProvider){
-    $routeProvider
-    .when('/', {
-        templateUrl: 'home.html',
-        controller: 'homeCtrl'
-    })
-    .when('/print', {
-        templateUrl: 'print.html',
-        controller: 'printCtrl'
-    });
-})*/
+
 .config(function($interpolateProvider){
     $interpolateProvider.startSymbol('[[').endSymbol(']]')
 })
@@ -31,69 +20,18 @@ var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
         }
     }
 })
-.factory('socketCon', ['$rootScope', function($rootScope){
-    var socket = io.connect('http://' + document.domain + ':' + location.port);
+.run(function($rootScope){
 
-    return {
-        on: function(eventName, cb){
-            socket.on(eventName, cb)
-        },
-        emit: function(eventName, data ,cb){
-            socket.emit(eventName, data ,cb)
-        }
+    var ws = new WebSocket('ws://' + document.domain + ':' + location.port + '/ws');
+
+    ws.onmessage = function (message) {
+        o = JSON.parse(message.data);
+        $rootScope.$apply(function(){
+            $rootScope.$broadcast(o.event, o.args);
+         });
     }
-}])
-.run(function($rootScope, socketCon){
-    socketCon.on('online', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('online', data);
-        });
-    });
-
-    socketCon.on('error', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('error', data);
-        });
-    });
-
-    socketCon.on('disconnected', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('disconnected', data);
-        });
-    });
-
-    socketCon.on('temperature', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('temperature', data);
-        });
-    });
-
-    socketCon.on('started', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('started', data);
-        });
-    });
-
-    socketCon.on('paused', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('paused', data);
-        });
-    });
-
-    socketCon.on('resumed', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('resumed', data);
-        });
-    });
-
-
-    socketCon.on('ended', function(data){
-        $rootScope.$apply(function(){
-            $rootScope.$broadcast('ended', data);
-        });
-    });
 })
-.controller('pyrintCtrl', function($scope, $http, $uibModal, socketCon){
+.controller('pyrintCtrl', function($scope, $http, $uibModal){
 
     $scope.reset = function(){
         $scope.online = false;
@@ -107,6 +45,13 @@ var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
         $scope.gCodeFile = null;
         $scope.gCodeFileSize = null;
         $scope.gCodeLines = 0;
+        $scope.gCodeLinesSent = 0;
+
+        $scope.X = 0;
+        $scope.Y = 0;
+        $scope.Z = 0;
+
+        $scope.progress = 0.0;
 
         $scope.uploading = false;
     }
@@ -126,6 +71,13 @@ var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
             $scope.gCodeFile = resp.data.gcode.file_name;
             $scope.gCodeFileSize = resp.data.gcode.file_size;
             $scope.gCodeLines = resp.data.gcode.lines;
+            $scope.gCodeLinesSent = resp.data.gcode.lines_sent;
+        }
+
+        if(resp.data.pos!==null){
+            $scope.X = resp.data.pos.x;
+            $scope.Y = resp.data.pos.y;
+            $scope.Z = resp.data.pos.z;
         }
     });
 
@@ -165,30 +117,42 @@ var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
         $scope.paused = true;
     });
 
+    $scope.$on('received', function(event, data){
+        $scope.X = data.x;
+        $scope.Y = data.y;
+        $scope.Z = data.z;
+
+        $scope.gCodeLinesSent = data.lines_sent;
+        $scope.progress = parseFloat(($scope.gCodeLinesSent / $scope.gCodeLines) * 100).toFixed(2);
+
+        console.log($scope.gCodeLines)
+        console.log($scope.gCodeLinesSent)
+        console.log('------------------------------')
+    });
 
     $scope.disconnect = function(){
-        socketCon.emit('disconnect_printer');
+        $http.post('/disconnect');
     }
 
     $scope.startPrinting = function(){
-        socketCon.emit('start_printing');
+        $http.post('/start');
     }
 
     $scope.pausePrinting = function(){
-        socketCon.emit('pause_printing');
+        $http.post('/pause');
     }
 
     $scope.cancelPrinting = function(){
-        socketCon.emit('cancel_printing');
+        $http.post('/cancel');
     }
 
     $scope.XYHome = function(){
-        socketCon.emit('send_gcode', {'code': 'G28 X Y'});
+        $http.post('/run_gcode', {'code': 'G28 X Y'});
         return false;
     }
 
     $scope.ZHome = function(){
-        socketCon.emit('send_gcode', {'code': 'G28 Z'});
+        $http.post('/run_gcode', {'code': 'G28 Z'});
         return false;
     }
 
@@ -223,8 +187,15 @@ var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
         fileReader.readAsText(fileUploaded, 'UTF-8');
     }
 
+    $scope.progressVal = function(){
+        if($scope.gCodeLines){
+             p = ($scope.gCodeLinesSent / $scope.gCodeLines) * 100;
+             return parseFloat(p).toFixed(2);
+          }
+    }
+
 })
-.controller('connectModalCtrl', function($scope, $http, $uibModalInstance, socketCon){
+.controller('connectModalCtrl', function($scope, $http, $uibModalInstance){
 
     $scope.portList = [];
     $scope.selectedPort = '';
@@ -233,18 +204,23 @@ var pyrintApp = angular.module('pyrintApp', ['ui.bootstrap'])
     $scope.cancelling = false;
     $scope.errMsg = null;
 
-    $http.get('/ports.json').then(function(resp){
-        $scope.portList = resp.data;
-    });
+    $scope.loadData = function(){
+        $http.get('/ports.json').then(function(resp){
+            $scope.portList = resp.data;
+        });
+    }
+
+    $scope.loadData();
 
     $scope.connect = function(){
         $scope.connecting = true;
         $scope.errMsg = null;
-        socketCon.emit('connect_printer', {'port': $scope.selectedPort, 'baud': $scope.selectedBaud});
+        $http.post('/connect', {'port': $scope.selectedPort, 'baud': $scope.selectedBaud});
+        //socketCon.emit('connect_printer', {'port': $scope.selectedPort, 'baud': $scope.selectedBaud});
     }
 
     $scope.cancel = function(){
-        socketCon.emit('disconnect_printer');
+        // socketCon.emit('disconnect_printer');
         $scope.cancelling = true;
     }
 
