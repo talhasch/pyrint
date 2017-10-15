@@ -1,0 +1,71 @@
+.wrapper {
+  min-width: 768px; }
+  .wrapper .header {
+    height: 50px;
+    background: #f9f9f9;
+    border-bottom: 1px solid #eae8e8;
+    margin-bottom: 20px; }
+    .wrapper .header .brand {
+      float: left;
+      color: #428bca;
+      font-size: 26px;
+      line-height: 1.9em;
+      padding-left: 20px; }
+  .wrapper .printer {
+    float: right; }
+    .wrapper .printer .not-connected {
+      color: #b2b2b2;
+      font-size: 18px;
+      padding-top: 14px;
+      padding-right: 10px; }
+    .wrapper .printer .printer-info {
+      padding-top: 6px;
+      padding-right: 4px;
+      color: #8c8c8c; }
+      .wrapper .printer .printer-info .printer-info-left {
+        float: left;
+        margin-right: 10px; }
+        .wrapper .printer .printer-info .printer-info-left .printer-port {
+          font-size: 15px;
+          margin-bottom: 3px;
+          line-height: 100%; }
+          .wrapper .printer .printer-info .printer-info-left .printer-port span {
+            font-weight: bold;
+            margin-left: 5px;
+            margin-right: 5px; }
+        .wrapper .printer .printer-info .printer-info-left .printer-temp {
+          font-size: 14px;
+          text-align: right; }
+      .wrapper .printer .printer-info .printer-info-right {
+        float: right; }
+        .wrapper .printer .printer-info .printer-info-right .btn-disconnect {
+          margin-top: 3px; }
+  .wrapper .app-content-connect {
+    text-align: center;
+    padding-top: 30px; }
+  .wrapper .app-content-print {
+    text-align: center;
+    padding-top: 30px;
+    width: 300px;
+    margin: auto; }
+    .wrapper .app-content-print .file-info {
+      margin: 20px 0; }
+      .wrapper .app-content-print .file-info .file-name {
+        display: block;
+        font-weight: bold;
+        font-size: 15px; }
+      .wrapper .app-content-print .file-info .file-size {
+        display: block; }
+    .wrapper .app-content-print .control-print .control-item {
+      margin-bottom: 5px; }
+      .wrapper .app-content-print .control-print .control-item .btn {
+        width: 180px; }
+    .wrapper .app-content-print .control-printer .dropdown {
+      display: inline-block; }
+      .wrapper .app-content-print .control-printer .dropdown a[ng-click] {
+        cursor: pointer; }
+
+.connect-modal .alert {
+  margin-top: 20px; }
+
+/*# sourceMappingURL=style.css.map */
